@@ -1,0 +1,165 @@
+---
+title: Programming Assignment 2
+author: Che Jung Lee - 301249826
+output:
+  html_document:
+    mathjax: default
+---
+```{r include=FALSE}
+library(tree)
+```
+
+## Task 1
+```{r}
+# set blank cells to NA
+df <- read.csv("./data/titanic3.csv", na.strings = "")
+set.seed(1)
+split_idx <- sample(1:nrow(df), nrow(df)*0.8)
+training <- df[split_idx,]
+test <- df[-split_idx,]
+```
+
+## Task 2
+```{r}
+# https://stackoverflow.com/questions/8317231/elegant-way-to-report-missing-values-in-a-data-frame
+# find missing values in a data frame
+print(colSums(is.na(training)))
+print(colSums(is.na(test)))
+```
+
+## Task 3
+| Attribute | Selected | Reason                                                                         |
+|-----------|----------|--------------------------------------------------------------------------------|
+| pclass    | **yes**  | related to cabin, which is the room location on the ship                       |
+| survived  | no       | contains future knowledge; only used to check model accuracy                   |
+| name      | no       | only for identification purpose; has no relation to survival rate              |
+| sex       | **yes**  | seems highly correlated with survival rate                                     |
+| age       | **yes**  | seems highly correlated with survival rate                                     |
+| sibsp     | **yes**  | indicates family size, which affects survival rate                             |
+| parch     | **yes**  | indicates family size, which affects survival rate                             |
+| ticket    | no       | too many levels (929 different values); unlikely to have high predictive power |
+| fare      | **yes**  | may indicate class / cabin / family size                                       |
+| cabin     | no       | too many levels (186 different values); too much missing data (77%)            |
+| embarked  | **yes**  | may indicate crew / passenger based on the locations embarked                  |
+| boat      | no       | contains future knowledge; too much missing data (63%)                         |
+| body      | no       | contains future knowledge; too much missing data (91%)                         |
+| home.dest | no       | too many levels (369 different values); considerable missing data (43%)        |
+
+The number of levels for classification tree is limited to 32 in R, because it is computationally expensive to create 2<sup>32</sup> splits in the data; hence attributes with more than 32 levels are not selected. Attributes with too many missing values are also not selected, as any imputation method is likely going to produce biased or inaccruate results.
+
+## Task 4
+```{r}
+# drop rows containing over 5 missing values
+training <- training[!rowSums(is.na(training)) > 5,]
+
+# fill NA embarked with the most common value
+training$embarked[is.na(training$embarked)] <- names(which.max(table(training$embarked)))
+
+# fill NA fare with the median value for the passengers of the same class
+missing.fare.pclass <- training$pclass[is.na(training$fare)]
+pclass.median.fare <- median(training$fare[training$pclass == missing.fare.pclass], na.rm = TRUE)
+training$fare[is.na(training$fare)] <- pclass.median.fare
+
+# extract title (Mr, Miss, etc) from name to estimate age
+training$title <- sub(".*, (.*?)\\. .*", "\\1", training$name)
+test$title <- sub(".*, (.*?)\\. .*", "\\1", test$name)
+# create a data frame of median ages based on other attributes
+training.grouped <- aggregate(age ~ pclass + sex + title, training, FUN = median)
+test.grouped <- aggregate(age ~ pclass + sex + title, test, FUN = median)
+# match the estimated ages to the original data
+training.orig.str <- paste0(training$pclass, training$sex, training$title)
+training.grouped.str <- paste0(training.grouped$pclass, training.grouped$sex, training.grouped$title)
+training$age.new <- training.grouped$age[match(training.orig.str, training.grouped.str)]
+test.orig.str <- paste0(test$pclass, test$sex, test$title)
+test.grouped.str <- paste0(test.grouped$pclass, test.grouped$sex, test.grouped$title)
+test$age.new <- training.grouped$age[match(test.orig.str, test.grouped.str)]
+# fill NA age with the estimated age
+training$age[is.na(training$age)] <- training$age.new[is.na(training$age)]
+test$age[is.na(test$age)] <- test$age.new[is.na(test$age)]
+# handle special cases where there is no corresponding values in group
+missing.age.pclass <- training$pclass[is.na(training$age)]
+missing.age.sex <- training$sex[is.na(training$age)]
+median.age <- median(training$age[training$pclass == missing.age.pclass & training$sex == missing.age.sex], na.rm = TRUE)
+training$age[is.na(training$age)] <- median.age
+
+# drop all irrelevant columns
+training <- subset(training, select = -c(name,title,age.new,ticket,cabin,boat,body,home.dest))
+test <- subset(test, select = -c(name,title,age.new,ticket,cabin,boat,body,home.dest))
+
+```
+
+***row***: I removed rows containing over 5 missing values, which appears to be the last row.
+
+***column***: I removed columns that are irrelevant or unselected due to insufficient data.
+
+**embarked**: there are only 2 missing values, so I replaced them by the majority class, i.e. the most dominant value in the attribute.
+
+**fare**: there is only 1 missing value, so I replaced it with the median fare value for the passengers of the same class.
+
+**age**: there are 263 missing values, so simple imputation methods like above cannot be used in such case. Below is a table listing some possible solutions to handle the missing values:
+
+| Solution                                                 | Selected | Reason                                                         |
+|----------------------------------------------------------|----------|----------------------------------------------------------------|
+| remove age as a predictor                                | no       | age seems highly correlated with survival rate                 |
+| drop observations with missing age values                | no       | may not be a good idea to drop 20% of the data                 |
+| use mean / median of the column                          | no       | too inaccurate; poor representative                            |
+| use random numbers between (mean - std) and (mean + std) | no       | inconsistent results with big margin of error                  |
+| estimate ages based on other attributes                  |**yes**   | seems like a reasonable solution that provides decent accuracy |
+| create a model (ex. linear regression) to predict ages   | no       | too complicated; introduces an extra layer of error            |
+
+The selected approach is similar to the solution that deals with the fare missing values, in that the missing age values are replaced with the median age values for the passengers of multiple identical attributes. Simply put, instead of using one attribute to determine the missing age values, I now use multiple ones to get a more precise approximation. Below is one implementation of the solution:
+
+1. extract **title** (i.e. Miss, Mr, Mrs, Sir, etc) from **name**
+2. select **sex**, **pclass**, and **title** as predictors of missing age values as they are the most relevant attributes in indicating ages
+3. group the predictors together and calculate the corresponding median ages
+4. match the results from (3) to the dataset
+5. replace missing age values with the estimated ages
+
+## Task 5
+```{r}
+# factorize survived attribute (0 - died and 1 - survived)
+training$survived <- factor(training$survived, label = c("died","survived"))
+test$survived <- factor(test$survived, label = c("died","survived"))
+
+# train and plot tree
+training.tree <- tree(survived ~ ., training)
+plot(training.tree)
+text(training.tree, pretty = 0)
+
+# https://stackoverflow.com/questions/40080794/calculating-prediction-accuracy-of-a-tree-using-rparts-predict-method-r-progra
+# print the size and accuracy of the model
+cat("the size of the tree:", nrow(training.tree$frame), "\n")
+training.predict <- predict(training.tree, test, type = "class")
+cat("the accuracy of the tree on the test dataset:", mean(test$survived == training.predict), "\n")
+```
+
+## Task 6
+
+It appears that the top three most important attributes are **sex**, **pclass**, and **fare** in decreasing order. Below is the reasoning of my choices:
+
+| Attribute | Reason                                                                                                                                                                                                                                                                                        |
+|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| sex       | this supports the idea of "women and children first", which is a well known principle enforced by the captain of Titanic.                                                                                                                                                                      |
+| pclass    | it is related to cabin, which is the room location on the ship. The higher the class, the higher the room, and thus the closer to deck and lifeboats. This matches with the results of the tree, where upper class passengers have better survival rate compared to passengers of lower class. |
+| fare      | it is related to family size. The lower the fare, the lesser the family members that one needs to take care of; hence this plays an important role in determining the survival rate.                                                                                                         |                             
+
+Based on the resulting tree, I learned that female passengers in upper class and travel alone have the highest survival rate, implying that I am most certainly going to die in the accident.
+
+## Task 7
+```{r}
+# cross validation
+training.cv <- cv.tree(training.tree, FUN = prune.misclass)
+plot(training.cv)
+
+# prune tree with the best size from cross validation
+training.prune <- prune.misclass(training.tree, best = 6)
+plot(training.prune)
+text(training.prune, pretty = 0)
+
+# print the accuracy of the model
+cat("the size of the pruned tree:", nrow(training.prune$frame), "\n")
+training.prune.predict <- predict(training.prune, test, type = "class")
+cat("the accuracy of the pruned tree:", mean(test$survived == training.prune.predict), "\n")
+```
+
+As shown in the cross validation plot, the optimal level of tree complexity is either **6** or **7**, as they have the minimum misclassifications, meaning that pruning will not reduce the number of misclassifications. This is why the pruned tree with level 6 scores the same prediction accuracy as the tree with level 7.
